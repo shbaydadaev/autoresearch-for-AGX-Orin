@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="520" viewBox="0 0 1000 520">
+<rect width="100%" height="100%" fill="white"/>
+<text x="500" y="24" text-anchor="middle" font-family="sans-serif" font-size="22">Autoresearch Progress</text>
+<line x1="80" y1="450" x2="970" y2="450" stroke="#333" stroke-width="1.2"/>
+<line x1="80" y1="40" x2="80" y2="450" stroke="#333" stroke-width="1.2"/>
+<line x1="80" y1="450.0" x2="970" y2="450.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="70" y="454.0" text-anchor="end" font-family="sans-serif" font-size="12">2.004</text>
+<line x1="80" y1="347.5" x2="970" y2="347.5" stroke="#e5e5e5" stroke-width="1"/>
+<text x="70" y="351.5" text-anchor="end" font-family="sans-serif" font-size="12">2.014</text>
+<line x1="80" y1="245.0" x2="970" y2="245.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="70" y="249.0" text-anchor="end" font-family="sans-serif" font-size="12">2.025</text>
+<line x1="80" y1="142.5" x2="970" y2="142.5" stroke="#e5e5e5" stroke-width="1"/>
+<text x="70" y="146.5" text-anchor="end" font-family="sans-serif" font-size="12">2.035</text>
+<line x1="80" y1="40.0" x2="970" y2="40.0" stroke="#e5e5e5" stroke-width="1"/>
+<text x="70" y="44.0" text-anchor="end" font-family="sans-serif" font-size="12">2.045</text>
+<line x1="80.0" y1="40" x2="80.0" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="80.0" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">0</text>
+<line x1="970.0" y1="40" x2="970.0" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="970.0" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">1</text>
+<polyline points="80.0,240.2 970.0,249.8" fill="none" stroke="#1f77b4" stroke-width="2" opacity="0.75"/>
+<polyline points="80.0,240.2 970.0,249.8" fill="none" stroke="#27ae60" stroke-width="2.5" opacity="0.85"/>
+<circle cx="80.0" cy="240.2" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
+<text x="80.0" y="230.2" text-anchor="middle" font-family="sans-serif" font-size="11">jetson orin baseline</text>
+<circle cx="970.0" cy="249.8" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
+<text x="970.0" y="239.8" text-anchor="middle" font-family="sans-serif" font-size="11">manual run</text>
+<text x="500" y="502" text-anchor="middle" font-family="sans-serif" font-size="14">Experiment Index</text>
+<text x="22" y="260" text-anchor="middle" font-family="sans-serif" font-size="14" transform="rotate(-90 22,260)">Validation BPB (lower is better)</text>
+</svg>

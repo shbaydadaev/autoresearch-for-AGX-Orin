@@ -15,40 +15,97 @@ import time
 import math
 import argparse
 import pickle
+import platform
 from multiprocessing import Pool
 
 import requests
 import pyarrow.parquet as pq
-import rustbpe
-import tiktoken
 import torch
 
+try:
+    import rustbpe
+except ImportError:
+    rustbpe = None
+
+try:
+    import tiktoken
+except ImportError:
+    tiktoken = None
+
 # ---------------------------------------------------------------------------
-# Constants (fixed, do not modify)
+# Constants (fixed for a given run, override via env if desired)
 # ---------------------------------------------------------------------------
 
-MAX_SEQ_LEN = 2048       # context length
-TIME_BUDGET = 300        # training time budget in seconds (5 minutes)
-EVAL_TOKENS = 40 * 524288  # number of tokens for val eval
+IS_ARM64 = platform.machine() == "aarch64"
+
+def env_int(name, default):
+    value = os.getenv(name)
+    return default if value is None else int(value)
+
+
+MAX_SEQ_LEN = env_int("AUTORESEARCH_MAX_SEQ_LEN", 512 if IS_ARM64 else 2048)
+TIME_BUDGET = env_int("AUTORESEARCH_TIME_BUDGET", 300)
+EVAL_TOKENS = env_int("AUTORESEARCH_EVAL_TOKENS", 8 * 65536 if IS_ARM64 else 40 * 524288)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "autoresearch")
+CACHE_DIR = os.getenv("AUTORESEARCH_CACHE_DIR", os.path.join(os.path.expanduser("~"), ".cache", "autoresearch"))
 DATA_DIR = os.path.join(CACHE_DIR, "data")
 TOKENIZER_DIR = os.path.join(CACHE_DIR, "tokenizer")
 BASE_URL = "https://huggingface.co/datasets/karpathy/climbmix-400b-shuffle/resolve/main"
 MAX_SHARD = 6542 # the last datashard is shard_06542.parquet
 VAL_SHARD = MAX_SHARD  # pinned validation shard (shard_06542)
 VAL_FILENAME = f"shard_{VAL_SHARD:05d}.parquet"
-VOCAB_SIZE = 8192
+VOCAB_SIZE = env_int("AUTORESEARCH_VOCAB_SIZE", 4096 if IS_ARM64 else 8192)
+TOKENIZER_MAX_CHARS = env_int("AUTORESEARCH_TOKENIZER_MAX_CHARS", 100_000_000 if IS_ARM64 else 1_000_000_000)
+TOKENIZER_DOC_CAP = env_int("AUTORESEARCH_TOKENIZER_DOC_CAP", 4096 if IS_ARM64 else 10_000)
+TOKENIZER_MODE = os.getenv("AUTORESEARCH_TOKENIZER_MODE", "byte" if IS_ARM64 else "auto").lower()
 
 # BPE split pattern (GPT-4 style, with \p{N}{1,2} instead of {1,3})
 SPLIT_PATTERN = r"""'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}{1,2}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+"""
 
 SPECIAL_TOKENS = [f"<|reserved_{i}|>" for i in range(4)]
 BOS_TOKEN = "<|reserved_0|>"
+
+
+class ByteEncoding:
+    """Tiny utf-8 byte tokenizer fallback that works everywhere, including Jetson."""
+
+    def __init__(self):
+        self.special_tokens = {name: 256 + i for i, name in enumerate(SPECIAL_TOKENS)}
+        self.n_vocab = 256 + len(SPECIAL_TOKENS)
+
+    def encode_single_token(self, token):
+        return self.special_tokens[token]
+
+    def encode_ordinary(self, text):
+        return list(text.encode("utf-8"))
+
+    def encode_ordinary_batch(self, texts, num_threads=8):
+        del num_threads
+        return [self.encode_ordinary(text) for text in texts]
+
+    def decode(self, ids):
+        values = bytearray()
+        for token_id in ids:
+            if 0 <= token_id < 256:
+                values.append(token_id)
+        return values.decode("utf-8", errors="replace")
+
+
+def build_tokenizer_payload():
+    mode = TOKENIZER_MODE
+    if mode == "auto":
+        mode = "rustbpe" if rustbpe is not None and tiktoken is not None else "byte"
+    if mode == "byte":
+        return {"kind": "byte"}
+    if mode != "rustbpe":
+        raise ValueError(f"Unsupported tokenizer mode: {mode}")
+    if rustbpe is None or tiktoken is None:
+        raise RuntimeError("AUTORESEARCH_TOKENIZER_MODE=rustbpe requires rustbpe and tiktoken to be installed.")
+    return {"kind": "rustbpe"}
 
 # ---------------------------------------------------------------------------
 # Data download
@@ -122,7 +179,7 @@ def list_parquet_files():
     return [os.path.join(DATA_DIR, f) for f in files]
 
 
-def text_iterator(max_chars=1_000_000_000, doc_cap=10_000):
+def text_iterator(max_chars=TOKENIZER_MAX_CHARS, doc_cap=TOKENIZER_DOC_CAP):
     """Yield documents from training split (all shards except pinned val shard)."""
     parquet_paths = [p for p in list_parquet_files() if not p.endswith(VAL_FILENAME)]
     nchars = 0
@@ -154,32 +211,37 @@ def train_tokenizer():
         print("Tokenizer: need at least 2 data shards (1 train + 1 val). Download more data first.")
         sys.exit(1)
 
-    # --- Train with rustbpe ---
-    print("Tokenizer: training BPE tokenizer...")
-    t0 = time.time()
+    payload = build_tokenizer_payload()
 
-    tokenizer = rustbpe.Tokenizer()
-    vocab_size_no_special = VOCAB_SIZE - len(SPECIAL_TOKENS)
-    tokenizer.train_from_iterator(text_iterator(), vocab_size_no_special, pattern=SPLIT_PATTERN)
+    if payload["kind"] == "byte":
+        enc = ByteEncoding()
+        with open(tokenizer_pkl, "wb") as f:
+            pickle.dump(payload, f)
+        print("Tokenizer: using byte-level fallback tokenizer (Jetson-friendly default)")
+    else:
+        print("Tokenizer: training BPE tokenizer...")
+        t0 = time.time()
 
-    # Build tiktoken encoding from trained merges
-    pattern = tokenizer.get_pattern()
-    mergeable_ranks = {bytes(k): v for k, v in tokenizer.get_mergeable_ranks()}
-    tokens_offset = len(mergeable_ranks)
-    special_tokens = {name: tokens_offset + i for i, name in enumerate(SPECIAL_TOKENS)}
-    enc = tiktoken.Encoding(
-        name="rustbpe",
-        pat_str=pattern,
-        mergeable_ranks=mergeable_ranks,
-        special_tokens=special_tokens,
-    )
+        tokenizer = rustbpe.Tokenizer()
+        vocab_size_no_special = VOCAB_SIZE - len(SPECIAL_TOKENS)
+        tokenizer.train_from_iterator(text_iterator(), vocab_size_no_special, pattern=SPLIT_PATTERN)
 
-    # Save tokenizer
-    with open(tokenizer_pkl, "wb") as f:
-        pickle.dump(enc, f)
+        pattern = tokenizer.get_pattern()
+        mergeable_ranks = {bytes(k): v for k, v in tokenizer.get_mergeable_ranks()}
+        tokens_offset = len(mergeable_ranks)
+        special_tokens = {name: tokens_offset + i for i, name in enumerate(SPECIAL_TOKENS)}
+        enc = tiktoken.Encoding(
+            name="rustbpe",
+            pat_str=pattern,
+            mergeable_ranks=mergeable_ranks,
+            special_tokens=special_tokens,
+        )
 
-    t1 = time.time()
-    print(f"Tokenizer: trained in {t1 - t0:.1f}s, saved to {tokenizer_pkl}")
+        with open(tokenizer_pkl, "wb") as f:
+            pickle.dump({"kind": "tiktoken", "encoding": enc}, f)
+
+        t1 = time.time()
+        print(f"Tokenizer: trained in {t1 - t0:.1f}s, saved to {tokenizer_pkl}")
 
     # --- Build token_bytes lookup for BPB evaluation ---
     print("Tokenizer: building token_bytes lookup...")
@@ -216,7 +278,17 @@ class Tokenizer:
     @classmethod
     def from_directory(cls, tokenizer_dir=TOKENIZER_DIR):
         with open(os.path.join(tokenizer_dir, "tokenizer.pkl"), "rb") as f:
-            enc = pickle.load(f)
+            payload = pickle.load(f)
+        if isinstance(payload, dict):
+            kind = payload.get("kind")
+            if kind == "byte":
+                enc = ByteEncoding()
+            elif kind == "tiktoken":
+                enc = payload["encoding"]
+            else:
+                raise ValueError(f"Unsupported tokenizer payload kind: {kind}")
+        else:
+            enc = payload
         return cls(enc)
 
     def get_vocab_size(self):
@@ -370,7 +442,7 @@ def evaluate_bpb(model, tokenizer, batch_size):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare data and tokenizer for autoresearch")
-    parser.add_argument("--num-shards", type=int, default=10, help="Number of training shards to download (-1 = all). Val shard is always pinned.")
+    parser.add_argument("--num-shards", type=int, default=20 if IS_ARM64 else 10, help="Number of training shards to download (-1 = all). Val shard is always pinned.")
     parser.add_argument("--download-workers", type=int, default=8, help="Number of parallel download workers")
     args = parser.parse_args()
 

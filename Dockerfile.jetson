@@ -1,0 +1,36 @@
+ARG BASE_IMAGE=nvcr.io/nvidia/l4t-pytorch:r35.2.1-pth2.0-py3
+FROM ${BASE_IMAGE}
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1 \
+    AUTORESEARCH_TOKENIZER_MODE=byte \
+    AUTORESEARCH_ATTENTION_BACKEND=eager \
+    AUTORESEARCH_AMP_DTYPE=fp32 \
+    AUTORESEARCH_OPTIMIZER=adamw \
+    AUTORESEARCH_USE_VALUE_EMBEDS=0 \
+    AUTORESEARCH_USE_COMPILE=0 \
+    AUTORESEARCH_MAX_SEQ_LEN=512 \
+    AUTORESEARCH_EVAL_TOKENS=524288 \
+    AUTORESEARCH_TIME_BUDGET=300 \
+    AUTORESEARCH_VOCAB_SIZE=4096 \
+    AUTORESEARCH_CACHE_DIR=/workspace/.cache/autoresearch
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    curl \
+    git \
+    libopenblas-dev \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/autoresearch
+
+COPY requirements-jetson.txt /tmp/requirements-jetson.txt
+RUN python3 -m pip install --upgrade pip && \
+    python3 -m pip install -r /tmp/requirements-jetson.txt
+
+COPY . /workspace/autoresearch
+
+CMD ["/bin/bash"]

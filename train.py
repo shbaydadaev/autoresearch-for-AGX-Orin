@@ -1,29 +1,195 @@
 """
 Autoresearch pretraining script. Single-GPU, single-file.
 Cherry-picked and simplified from nanochat.
-Usage: uv run train.py
+Usage: python3 train.py
 """
 
 import os
+import platform
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 import gc
 import math
+import subprocess
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, asdict
+from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from kernels import get_kernel
-cap = torch.cuda.get_device_capability()
-# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
-repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
-fa3 = get_kernel(repo).flash_attn_interface
-
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
+
+IS_ARM64 = platform.machine() == "aarch64"
+DEVICE_PEAK_FLOPS = float(os.getenv("AUTORESEARCH_DEVICE_PEAK_FLOPS", "0"))
+ATTN_MASK_CACHE = {}
+ALLOW_UNSTABLE_FP16 = os.getenv("AUTORESEARCH_ALLOW_FP16", "0").lower() in {"1", "true"}
+USE_VALUE_EMBEDS = os.getenv("AUTORESEARCH_USE_VALUE_EMBEDS", "0" if IS_ARM64 else "1").lower() in {"1", "true"}
+LOG_PATH = os.getenv("AUTORESEARCH_LOG_PATH", "run.log")
+LOG_FILE = None
+RESULTS_PATH = Path(os.getenv("AUTORESEARCH_RESULTS_PATH", "results.tsv"))
+RESULT_STATUS = os.getenv("AUTORESEARCH_RESULT_STATUS", "keep")
+RESULT_DESCRIPTION = os.getenv("AUTORESEARCH_RUN_DESCRIPTION", "manual run")
+RESULT_RECORDED = False
+
+
+def init_log_file():
+    global LOG_FILE
+    if LOG_FILE is None:
+        LOG_FILE = open(LOG_PATH, "w", buffering=1)
+    return LOG_FILE
+
+
+def log_line(message=""):
+    print(message)
+    log_fp = init_log_file()
+    print(message, file=log_fp, flush=True)
+
+
+def log_step_line(message):
+    print(f"\r{message}    ", end="", flush=True)
+    log_fp = init_log_file()
+    print(message, file=log_fp, flush=True)
+
+
+def get_git_commit_short():
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return "nogit"
+
+
+def ensure_results_header():
+    if RESULTS_PATH.exists() and RESULTS_PATH.stat().st_size > 0:
+        return
+    RESULTS_PATH.write_text("commit\tval_bpb\tmemory_gb\tstatus\tdescription\n")
+
+
+def append_result_row(val_bpb, memory_gb, status, description):
+    global RESULT_RECORDED
+    if RESULT_RECORDED:
+        return
+    ensure_results_header()
+    with RESULTS_PATH.open("a") as f:
+        f.write(
+            f"{get_git_commit_short()}\t{val_bpb:.6f}\t{memory_gb:.1f}\t{status}\t{description}\n"
+        )
+    RESULT_RECORDED = True
+    log_line(f"Recorded result to {RESULTS_PATH}: status={status} val_bpb={val_bpb:.6f} mem={memory_gb:.1f}GB desc={description}")
+
+
+def resolve_autocast_dtype():
+    requested = os.getenv("AUTORESEARCH_AMP_DTYPE", "fp32" if IS_ARM64 else "auto").lower()
+    if requested == "bf16":
+        return torch.bfloat16
+    if requested == "fp16":
+        if IS_ARM64 and not ALLOW_UNSTABLE_FP16:
+            return None
+        return torch.float16
+    if requested == "fp32":
+        return None
+    if torch.cuda.is_available() and hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_bf16_supported():
+        return torch.bfloat16
+    return torch.float16
+
+
+LOW_PRECISION_DTYPE = resolve_autocast_dtype()
+OPTIMIZER_MODE = os.getenv("AUTORESEARCH_OPTIMIZER", "adamw" if IS_ARM64 else "hybrid").lower()
+MODEL_STORAGE_DTYPE = torch.float32
+
+
+def make_autocast_context():
+    if LOW_PRECISION_DTYPE is None:
+        return nullcontext()
+    return torch.amp.autocast(device_type="cuda", dtype=LOW_PRECISION_DTYPE)
+
+
+def resolve_attention_backend():
+    requested = os.getenv("AUTORESEARCH_ATTENTION_BACKEND", "eager" if IS_ARM64 else "auto").lower()
+    backend = {"name": "eager", "interface": None, "warning": None}
+    if requested not in {"auto", "sdpa", "kernel", "eager"}:
+        raise ValueError(f"Unsupported attention backend: {requested}")
+    if requested == "eager":
+        return backend
+    if requested == "sdpa":
+        backend["name"] = "sdpa"
+        return backend
+    try:
+        from kernels import get_kernel
+
+        cap = torch.cuda.get_device_capability()
+        repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
+        backend["name"] = "kernel"
+        backend["interface"] = get_kernel(repo).flash_attn_interface
+        return backend
+    except Exception as exc:
+        if requested == "kernel":
+            raise
+        backend["warning"] = f"Kernel attention unavailable ({exc}); falling back to torch SDPA."
+        return backend
+
+
+def get_sdpa_mask(seq_len, window_size, device):
+    left_window, right_window = window_size
+    cache_key = (seq_len, left_window, right_window, device.type, device.index)
+    mask = ATTN_MASK_CACHE.get(cache_key)
+    if mask is not None:
+        return mask
+    q_positions = torch.arange(seq_len, device=device).unsqueeze(1)
+    k_positions = torch.arange(seq_len, device=device).unsqueeze(0)
+    allowed = k_positions <= q_positions
+    if left_window >= 0:
+        allowed = allowed & (k_positions >= (q_positions - left_window))
+    if right_window >= 0:
+        allowed = allowed & (k_positions <= (q_positions + right_window))
+    mask = torch.zeros((seq_len, seq_len), dtype=torch.float32, device=device)
+    mask.masked_fill_(~allowed, float("-inf"))
+    mask = mask.unsqueeze(0).unsqueeze(0)
+    ATTN_MASK_CACHE[cache_key] = mask
+    return mask
+
+
+def run_attention(q, k, v, window_size, backend):
+    if backend["name"] == "kernel":
+        return backend["interface"].flash_attn_func(q, k, v, causal=True, window_size=window_size)
+
+    original_dtype = q.dtype
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v = v.transpose(1, 2)
+    full_causal = window_size[1] == 0 and window_size[0] >= q.size(-2)
+    if backend["name"] == "sdpa" and hasattr(F, "scaled_dot_product_attention"):
+        if full_causal:
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+        else:
+            attn_mask = get_sdpa_mask(q.size(-2), window_size, q.device)
+            y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+    else:
+        q = q.float()
+        k = k.float()
+        v = v.float()
+        scale = q.size(-1) ** -0.5
+        scores = (q @ k.transpose(-2, -1)) * scale
+        if full_causal:
+            attn_mask = get_sdpa_mask(q.size(-2), (q.size(-2), 0), q.device)
+        else:
+            attn_mask = get_sdpa_mask(q.size(-2), window_size, q.device)
+        scores = scores + attn_mask
+        probs = F.softmax(scores, dim=-1)
+        y = probs @ v
+    return y.transpose(1, 2).to(dtype=original_dtype)
+
+
+ATTENTION_BACKEND = resolve_attention_backend()
 
 # ---------------------------------------------------------------------------
 # GPT Model
@@ -41,11 +207,15 @@ class GPTConfig:
 
 
 def norm(x):
-    return F.rms_norm(x, (x.size(-1),))
+    if hasattr(F, "rms_norm"):
+        return F.rms_norm(x, (x.size(-1),))
+    return x * torch.rsqrt(x.float().pow(2).mean(dim=-1, keepdim=True) + 1e-6).to(dtype=x.dtype)
 
 
 def has_ve(layer_idx, n_layer):
     """Returns True if layer should have Value Embedding (alternating, last always included)."""
+    if not USE_VALUE_EMBEDS:
+        return False
     return layer_idx % 2 == (n_layer - 1) % 2
 
 
@@ -90,7 +260,7 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        y = run_attention(q, k, v, window_size, ATTENTION_BACKEND)
         y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
@@ -175,10 +345,10 @@ class GPT(nn.Module):
         head_dim = self.config.n_embd // self.config.n_head
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.cos, self.sin = cos, sin
-        # Cast embeddings to bf16
-        self.transformer.wte.to(dtype=torch.bfloat16)
+        # Keep the largest tables in reduced precision on small Jetson memory budgets.
+        self.transformer.wte.to(dtype=MODEL_STORAGE_DTYPE)
         for ve in self.value_embeds.values():
-            ve.to(dtype=torch.bfloat16)
+            ve.to(dtype=MODEL_STORAGE_DTYPE)
 
     def _precompute_rotary_embeddings(self, seq_len, head_dim, base=10000, device=None):
         if device is None:
@@ -188,7 +358,8 @@ class GPT(nn.Module):
         t = torch.arange(seq_len, dtype=torch.float32, device=device)
         freqs = torch.outer(t, inv_freq)
         cos, sin = freqs.cos(), freqs.sin()
-        cos, sin = cos.bfloat16(), sin.bfloat16()
+        cos = cos.to(dtype=MODEL_STORAGE_DTYPE)
+        sin = sin.to(dtype=MODEL_STORAGE_DTYPE)
         cos, sin = cos[None, :, None, :], sin[None, :, None, :]
         return cos, sin
 
@@ -246,7 +417,24 @@ class GPT(nn.Module):
             len(lm_head_params) + len(value_embeds_params) + len(resid_params) + len(x0_params))
         # Scale LR ∝ 1/√dmodel (tuned at 768 dim)
         dmodel_lr_scale = (model_dim / 768) ** -0.5
-        print(f"Scaling AdamW LRs by 1/sqrt({model_dim}/768) = {dmodel_lr_scale:.6f}")
+        log_line(f"Scaling AdamW LRs by 1/sqrt({model_dim}/768) = {dmodel_lr_scale:.6f}")
+        if OPTIMIZER_MODE == "adamw":
+            param_groups = [
+                dict(params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-8, weight_decay=0.0),
+                dict(params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-8, weight_decay=0.0),
+                dict(params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-8, weight_decay=0.0),
+                dict(params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-8, weight_decay=0.0),
+                dict(params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-8, weight_decay=0.0),
+                dict(params=matrix_params, lr=matrix_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-8, weight_decay=weight_decay),
+            ]
+            optimizer = torch.optim.AdamW(param_groups)
+            for group in optimizer.param_groups:
+                group["kind"] = "adamw"
+                group["initial_lr"] = group["lr"]
+            log_line("Optimizer mode: AdamW-only")
+            return optimizer
+        if OPTIMIZER_MODE != "hybrid":
+            raise ValueError(f"Unsupported AUTORESEARCH_OPTIMIZER value: {OPTIMIZER_MODE}")
         param_groups = [
             dict(kind='adamw', params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0),
             dict(kind='adamw', params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0),
@@ -263,6 +451,7 @@ class GPT(nn.Module):
         optimizer = MuonAdamW(param_groups)
         for group in optimizer.param_groups:
             group["initial_lr"] = group["lr"]
+        log_line("Optimizer mode: Muon + AdamW hybrid")
         return optimizer
 
     def forward(self, idx, targets=None, reduction='mean'):
@@ -302,8 +491,13 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
-@torch.compile(dynamic=False, fullgraph=True)
 def adamw_step_fused(p, grad, exp_avg, exp_avg_sq, step_t, lr_t, beta1_t, beta2_t, eps_t, wd_t):
+    step_t = float(step_t)
+    lr_t = float(lr_t)
+    beta1_t = float(beta1_t)
+    beta2_t = float(beta2_t)
+    eps_t = float(eps_t)
+    wd_t = float(wd_t)
     p.mul_(1 - lr_t * wd_t)
     exp_avg.lerp_(grad, 1 - beta1_t)
     exp_avg_sq.lerp_(grad.square(), 1 - beta2_t)
@@ -313,13 +507,15 @@ def adamw_step_fused(p, grad, exp_avg, exp_avg_sq, step_t, lr_t, beta1_t, beta2_
     step_size = lr_t / bias1
     p.add_(exp_avg / denom, alpha=-step_size)
 
-@torch.compile(dynamic=False, fullgraph=True)
 def muon_step_fused(stacked_grads, stacked_params, momentum_buffer, second_momentum_buffer,
                     momentum_t, lr_t, wd_t, beta2_t, ns_steps, red_dim):
+    momentum_t = float(momentum_t)
+    lr_t = float(lr_t)
+    wd_t = float(wd_t)
+    beta2_t = float(beta2_t)
     # Nesterov momentum
-    momentum = momentum_t.to(stacked_grads.dtype)
-    momentum_buffer.lerp_(stacked_grads, 1 - momentum)
-    g = stacked_grads.lerp_(momentum_buffer, momentum)
+    momentum_buffer.lerp_(stacked_grads, 1.0 - momentum_t)
+    g = stacked_grads.lerp(momentum_buffer, momentum_t)
     # Polar express orthogonalization
     X = g.bfloat16()
     X = X / (X.norm(dim=(-2, -1), keepdim=True) * 1.02 + 1e-6)
@@ -335,20 +531,19 @@ def muon_step_fused(stacked_grads, stacked_params, momentum_buffer, second_momen
             X = a * X + B @ X
     g = X
     # NorMuon variance reduction
-    beta2 = beta2_t.to(g.dtype)
     v_mean = g.float().square().mean(dim=red_dim, keepdim=True)
     red_dim_size = g.size(red_dim)
     v_norm_sq = v_mean.sum(dim=(-2, -1), keepdim=True) * red_dim_size
     v_norm = v_norm_sq.sqrt()
-    second_momentum_buffer.lerp_(v_mean.to(dtype=second_momentum_buffer.dtype), 1 - beta2)
+    second_momentum_buffer.lerp_(v_mean.to(dtype=second_momentum_buffer.dtype), 1.0 - beta2_t)
     step_size = second_momentum_buffer.clamp_min(1e-10).rsqrt()
     scaled_sq_sum = (v_mean * red_dim_size) * step_size.float().square()
     v_norm_new = scaled_sq_sum.sum(dim=(-2, -1), keepdim=True).sqrt()
     final_scale = step_size * (v_norm / v_norm_new.clamp_min(1e-10))
     g = g * final_scale.to(g.dtype)
     # Cautious weight decay + parameter update
-    lr = lr_t.to(g.dtype)
-    wd = wd_t.to(g.dtype)
+    lr = lr_t
+    wd = wd_t
     mask = (g * stacked_params) >= 0
     stacked_params.sub_(lr * g + lr * wd * stacked_params * mask)
 
@@ -358,17 +553,6 @@ class MuonAdamW(torch.optim.Optimizer):
 
     def __init__(self, param_groups):
         super().__init__(param_groups, defaults={})
-        # 0-D CPU tensors to avoid torch.compile recompilation when values change
-        self._adamw_step_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_beta1_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_eps_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._adamw_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_momentum_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_lr_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_wd_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
-        self._muon_beta2_t = torch.tensor(0.0, dtype=torch.float32, device="cpu")
 
     def _step_adamw(self, group):
         for p in group['params']:
@@ -381,15 +565,9 @@ class MuonAdamW(torch.optim.Optimizer):
                 state['exp_avg'] = torch.zeros_like(p)
                 state['exp_avg_sq'] = torch.zeros_like(p)
             state['step'] += 1
-            self._adamw_step_t.fill_(state['step'])
-            self._adamw_lr_t.fill_(group['lr'])
-            self._adamw_beta1_t.fill_(group['betas'][0])
-            self._adamw_beta2_t.fill_(group['betas'][1])
-            self._adamw_eps_t.fill_(group['eps'])
-            self._adamw_wd_t.fill_(group['weight_decay'])
             adamw_step_fused(p, grad, state['exp_avg'], state['exp_avg_sq'],
-                            self._adamw_step_t, self._adamw_lr_t, self._adamw_beta1_t,
-                            self._adamw_beta2_t, self._adamw_eps_t, self._adamw_wd_t)
+                            state['step'], group['lr'], group['betas'][0],
+                            group['betas'][1], group['eps'], group['weight_decay'])
 
     def _step_muon(self, group):
         params = group['params']
@@ -407,15 +585,12 @@ class MuonAdamW(torch.optim.Optimizer):
         red_dim = -1 if shape[-2] >= shape[-1] else -2
         stacked_grads = torch.stack([p.grad for p in params])
         stacked_params = torch.stack(params)
-        self._muon_momentum_t.fill_(group["momentum"])
-        self._muon_beta2_t.fill_(group["beta2"] if group["beta2"] is not None else 0.0)
-        self._muon_lr_t.fill_(group["lr"] * max(1.0, shape[-2] / shape[-1])**0.5)
-        self._muon_wd_t.fill_(group["weight_decay"])
         muon_step_fused(stacked_grads, stacked_params,
                         state["momentum_buffer"], state["second_momentum_buffer"],
-                        self._muon_momentum_t, self._muon_lr_t, self._muon_wd_t,
-                        self._muon_beta2_t, group["ns_steps"], red_dim)
-        torch._foreach_copy_(params, list(stacked_params.unbind(0)))
+                        group["momentum"], group["lr"] * max(1.0, shape[-2] / shape[-1])**0.5, group["weight_decay"],
+                        group["beta2"] if group["beta2"] is not None else 0.0, group["ns_steps"], red_dim)
+        for param, updated in zip(params, stacked_params.unbind(0)):
+            param.copy_(updated)
 
     @torch.no_grad()
     def step(self):
@@ -429,26 +604,55 @@ class MuonAdamW(torch.optim.Optimizer):
 # Hyperparameters (edit these directly, no CLI flags needed)
 # ---------------------------------------------------------------------------
 
-# Model architecture
-ASPECT_RATIO = 64       # model_dim = depth * ASPECT_RATIO
-HEAD_DIM = 128          # target head dimension for attention
-WINDOW_PATTERN = "SSSL" # sliding window pattern: L=full, S=half context
+# Model architecture (Jetson AGX Orin / R35-friendly defaults)
+ASPECT_RATIO = 32       # model_dim = depth * ASPECT_RATIO
+HEAD_DIM = 64           # smaller heads fit Orin memory and SDPA fallback better
+WINDOW_PATTERN = "L"    # full causal attention; simplest and most reliable on Jetson
 
 # Optimization
-TOTAL_BATCH_SIZE = 2**19 # ~524K tokens per optimizer step
-EMBEDDING_LR = 0.6      # learning rate for token embeddings (Adam)
-UNEMBEDDING_LR = 0.004  # learning rate for lm_head (Adam)
-MATRIX_LR = 0.04        # learning rate for matrix parameters (Muon)
-SCALAR_LR = 0.5         # learning rate for per-layer scalars (Adam)
-WEIGHT_DECAY = 0.2      # cautious weight decay for Muon
-ADAM_BETAS = (0.8, 0.95) # Adam beta1, beta2
-WARMUP_RATIO = 0.0      # fraction of time budget for LR warmup
-WARMDOWN_RATIO = 0.5    # fraction of time budget for LR warmdown
-FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
+TOTAL_BATCH_SIZE = 2**14  # 16K tokens per optimizer step
+EMBEDDING_LR = 0.02       # learning rate for token embeddings (Adam)
+UNEMBEDDING_LR = 0.002    # learning rate for lm_head (Adam)
+MATRIX_LR = 0.003         # learning rate for matrix parameters
+SCALAR_LR = 0.02          # learning rate for per-layer scalars (Adam)
+WEIGHT_DECAY = 0.01       # modest weight decay for the safe Jetson baseline
+ADAM_BETAS = (0.9, 0.95)  # Adam beta1, beta2
+WARMUP_RATIO = 0.05       # short warmup helps smaller Jetson runs
+WARMDOWN_RATIO = 0.20     # preserve more of the run at peak LR
+FINAL_LR_FRAC = 0.1       # do not decay all the way to zero on short runs
 
 # Model size
-DEPTH = 8               # number of transformer layers
-DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
+DEPTH = 6                 # number of transformer layers
+DEVICE_BATCH_SIZE = 16    # per-device batch size (reduce if OOM)
+GRAD_CLIP_NORM = 1.0      # gradient clipping keeps the first Jetson run stable
+
+
+def maybe_compile_model(model):
+    requested = os.getenv("AUTORESEARCH_USE_COMPILE", "0" if IS_ARM64 else "1").lower()
+    if requested not in {"0", "1", "false", "true"}:
+        raise ValueError(f"Unsupported AUTORESEARCH_USE_COMPILE value: {requested}")
+    enabled = requested in {"1", "true"}
+    if not enabled or not hasattr(torch, "compile"):
+        return model, False
+    try:
+        return torch.compile(model, dynamic=False), True
+    except Exception as exc:
+        log_line(f"torch.compile unavailable ({exc}); continuing without compilation.")
+        return model, False
+
+
+def build_model_for_device(config, device):
+    try:
+        with torch.device("meta"):
+            model = GPT(config)
+        if hasattr(model, "to_empty"):
+            model.to_empty(device=device)
+        else:
+            model = GPT(config).to(device)
+        return model, "meta"
+    except Exception as exc:
+        log_line(f"Meta-device init unavailable ({exc}); falling back to direct CUDA init.")
+        return GPT(config).to(device), "direct"
 
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
@@ -456,15 +660,25 @@ DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
 
 t_start = time.time()
 torch.manual_seed(42)
+if not torch.cuda.is_available():
+    raise RuntimeError("autoresearch requires a CUDA-capable NVIDIA GPU. Jetson container must be started with --runtime nvidia or --gpus all.")
 torch.cuda.manual_seed(42)
 torch.set_float32_matmul_precision("high")
 device = torch.device("cuda")
-autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-H100_BF16_PEAK_FLOPS = 989.5e12
+autocast_dtype = LOW_PRECISION_DTYPE
+autocast_ctx = make_autocast_context()
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
-print(f"Vocab size: {vocab_size:,}")
+log_line(f"Vocab size: {vocab_size:,}")
+log_line(f"Autocast dtype: {autocast_dtype if autocast_dtype is not None else 'torch.float32'}")
+log_line(f"Attention backend: {ATTENTION_BACKEND['name']}")
+if ATTENTION_BACKEND["warning"] is not None:
+    log_line(f"Attention note: {ATTENTION_BACKEND['warning']}")
+log_line(f"Optimizer mode: {OPTIMIZER_MODE}")
+log_line(f"Value embeddings: {'enabled' if USE_VALUE_EMBEDS else 'disabled'}")
+if IS_ARM64 and os.getenv("AUTORESEARCH_AMP_DTYPE", "").lower() == "fp16" and not ALLOW_UNSTABLE_FP16:
+    log_line("Autocast note: fp16 requested on Jetson, but the stable baseline forces fp32 unless AUTORESEARCH_ALLOW_FP16=1.")
 
 def build_model_config(depth):
     base_dim = depth * ASPECT_RATIO
@@ -477,20 +691,19 @@ def build_model_config(depth):
     )
 
 config = build_model_config(DEPTH)
-print(f"Model config: {asdict(config)}")
+log_line(f"Model config: {asdict(config)}")
 
-with torch.device("meta"):
-    model = GPT(config)
-model.to_empty(device=device)
+model, init_mode = build_model_for_device(config, device)
+log_line(f"Model init mode: {init_mode}")
 model.init_weights()
 
 param_counts = model.num_scaling_params()
-print("Parameter counts:")
+log_line("Parameter counts:")
 for key, value in param_counts.items():
-    print(f"  {key:24s}: {value:,}")
+    log_line(f"  {key:24s}: {value:,}")
 num_params = param_counts['total']
 num_flops_per_token = model.estimate_flops()
-print(f"Estimated FLOPs per token: {num_flops_per_token:e}")
+log_line(f"Estimated FLOPs per token: {num_flops_per_token:e}")
 
 tokens_per_fwdbwd = DEVICE_BATCH_SIZE * MAX_SEQ_LEN
 assert TOTAL_BATCH_SIZE % tokens_per_fwdbwd == 0
@@ -505,13 +718,14 @@ optimizer = model.setup_optimizer(
     weight_decay=WEIGHT_DECAY,
 )
 
-model = torch.compile(model, dynamic=False)
+model, compile_enabled = maybe_compile_model(model)
+log_line(f"torch.compile: {'enabled' if compile_enabled else 'disabled'}")
 
 train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
 x, y, epoch = next(train_loader)  # prefetch first batch
 
-print(f"Time budget: {TIME_BUDGET}s")
-print(f"Gradient accumulation steps: {grad_accum_steps}")
+log_line(f"Time budget: {TIME_BUDGET}s")
+log_line(f"Gradient accumulation steps: {grad_accum_steps}")
 
 # Schedules (all based on progress = training_time / TIME_BUDGET)
 
@@ -561,14 +775,25 @@ while True:
         if group['kind'] == 'muon':
             group["momentum"] = muon_momentum
             group["weight_decay"] = muon_weight_decay
+    if GRAD_CLIP_NORM is not None and GRAD_CLIP_NORM > 0:
+        torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP_NORM)
     optimizer.step()
     model.zero_grad(set_to_none=True)
 
     train_loss_f = train_loss.item()
 
     # Fast fail: abort if loss is exploding or NaN
-    if math.isnan(train_loss_f) or train_loss_f > 100:
-        print("FAIL")
+    if math.isnan(train_loss_f):
+        append_result_row(0.0, torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024, "crash", f"{RESULT_DESCRIPTION} (nan loss)")
+        log_line(f"FAIL: train_loss became NaN at step {step}")
+        exit(1)
+    if math.isinf(train_loss_f):
+        append_result_row(0.0, torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024, "crash", f"{RESULT_DESCRIPTION} (inf loss)")
+        log_line(f"FAIL: train_loss became Inf at step {step}")
+        exit(1)
+    if train_loss_f > 100:
+        append_result_row(0.0, torch.cuda.max_memory_allocated() / 1024 / 1024 / 1024, "crash", f"{RESULT_DESCRIPTION} (loss explosion)")
+        log_line(f"FAIL: train_loss exploded to {train_loss_f:.6f} at step {step}")
         exit(1)
 
     torch.cuda.synchronize()
@@ -584,10 +809,14 @@ while True:
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
     pct_done = 100 * progress
     tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / H100_BF16_PEAK_FLOPS
+    if DEVICE_PEAK_FLOPS > 0:
+        mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / DEVICE_PEAK_FLOPS
+    else:
+        mfu = 0.0
     remaining = max(0, TIME_BUDGET - total_training_time)
 
-    print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
+    status_line = f"step {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s"
+    log_step_line(status_line)
 
     # GC management (Python's GC causes ~500ms stalls)
     if step == 0:
@@ -615,16 +844,19 @@ with autocast_ctx:
 # Final summary
 t_end = time.time()
 startup_time = t_start_training - t_start
-steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / H100_BF16_PEAK_FLOPS if total_training_time > 0 else 0
+steady_state_mfu = 0.0
+if total_training_time > 0 and DEVICE_PEAK_FLOPS > 0:
+    steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / DEVICE_PEAK_FLOPS
 peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
 
-print("---")
-print(f"val_bpb:          {val_bpb:.6f}")
-print(f"training_seconds: {total_training_time:.1f}")
-print(f"total_seconds:    {t_end - t_start:.1f}")
-print(f"peak_vram_mb:     {peak_vram_mb:.1f}")
-print(f"mfu_percent:      {steady_state_mfu:.2f}")
-print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
-print(f"num_steps:        {step}")
-print(f"num_params_M:     {num_params / 1e6:.1f}")
-print(f"depth:            {DEPTH}")
+log_line("---")
+log_line(f"val_bpb:          {val_bpb:.6f}")
+log_line(f"training_seconds: {total_training_time:.1f}")
+log_line(f"total_seconds:    {t_end - t_start:.1f}")
+log_line(f"peak_vram_mb:     {peak_vram_mb:.1f}")
+log_line(f"mfu_percent:      {steady_state_mfu:.2f}")
+log_line(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
+log_line(f"num_steps:        {step}")
+log_line(f"num_params_M:     {num_params / 1e6:.1f}")
+log_line(f"depth:            {DEPTH}")
+append_result_row(val_bpb, peak_vram_mb / 1024, RESULT_STATUS, RESULT_DESCRIPTION)
