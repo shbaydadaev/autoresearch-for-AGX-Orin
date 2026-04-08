@@ -1,40 +1,54 @@
-# autoresearch
+# autoresearch-for-AGX-Orin
 
 ![teaser](progress.png)
 
-`autoresearch` is a tiny autonomous LLM research loop. An agent edits [`train.py`](train.py), runs a fixed-length training job, evaluates `val_bpb`, keeps improvements, and discards regressions. This fork is retuned for **Jetson AGX Orin on Jetson Linux R35 / JetPack 5.x** and is meant to be run from a Docker container.
+This repository is a Jetson AGX Orin oriented fork of Karpathy's `autoresearch`: a tiny autonomous LLM research loop where an agent edits [`train.py`](train.py), runs a fixed-time training job, checks the validation score, and keeps or discards the idea.
 
-## What changed for Jetson
+This fork is tuned for:
 
-The original repo was tuned for an H100-class environment. This Jetson port changes the runtime so it is practical on AGX Orin:
+- Jetson AGX Orin
+- Jetson Linux R35 / JetPack 5.x
+- Docker-first usage
+- stable, conservative defaults instead of H100-style aggressive settings
 
-- Docker-first workflow via [`Dockerfile.jetson`](Dockerfile.jetson)
-- Smaller defaults in [`prepare.py`](prepare.py) and [`train.py`](train.py)
-- PyTorch SDPA fallback instead of requiring Hopper-oriented FlashAttention tooling
+## What This Repo Does
+
+The repo has four main pieces:
+
+- [`prepare.py`](prepare.py): downloads text shards, builds the tokenizer, and provides the fixed dataloader and evaluation utilities
+- [`train.py`](train.py): builds the model, trains for a fixed 5-minute budget, logs the run, and appends the result to `results.tsv`
+- [`analyze_results.py`](analyze_results.py): reads `results.tsv`, prints summary stats, and generates a progress plot
+- [`program.md`](program.md): instructions for an external coding agent to run autonomous experiment loops
+
+The benchmark target is:
+
+- `val_bpb` = validation bits per byte
+- lower is better
+
+## What Changed From The Original Repo
+
+The upstream project was tuned for much larger NVIDIA GPUs. This fork changes the runtime so it is practical on Orin:
+
+- Docker image based on NVIDIA Jetson PyTorch container
+- smaller model and batch defaults
+- simpler attention backend defaults
 - `torch.compile` disabled by default
-- Byte-level tokenizer fallback enabled by default so the container does not depend on `rustbpe`
-
-The research loop stays the same:
-
-- [`prepare.py`](prepare.py): data prep, tokenizer, dataloader, evaluation
-- [`train.py`](train.py): model, optimizer, training loop
-- [`program.md`](program.md): instructions for an external coding agent
+- byte-level tokenizer fallback enabled by default
+- automatic `run.log` generation
+- automatic `results.tsv` updates after each run
+- terminal-friendly analysis script
 
 ## Quick Start
 
-Build the container:
+From the Jetson host:
 
 ```bash
+cd /home/pi/autoresearch
 ./docker/build-jetson.sh
-```
-
-Start a shell in the container:
-
-```bash
 ./docker/run-jetson.sh
 ```
 
-Inside the container, prepare the cache and run a baseline experiment:
+Inside the container:
 
 ```bash
 python3 prepare.py --num-shards 4
@@ -42,32 +56,153 @@ AUTORESEARCH_RUN_DESCRIPTION="jetson orin baseline" python3 train.py
 python3 analyze_results.py
 ```
 
-If everything is healthy, `train.py` will run for about 5 minutes and print a final block like:
+That gives you:
+
+- one full training run
+- a detailed [`run.log`](run.log)
+- one appended row in [`results.tsv`](results.tsv)
+- a generated progress plot such as `autoresearch_progress.png` or `autoresearch_progress.svg`
+
+## Typical Workflow
+
+### 1. Prepare data once
+
+```bash
+python3 prepare.py --num-shards 4
+```
+
+This creates the cache under the container's default cache path and prepares:
+
+- downloaded parquet shards
+- tokenizer files
+- token byte lookup used for `val_bpb`
+
+### 2. Run one experiment
+
+```bash
+AUTORESEARCH_RUN_DESCRIPTION="baseline" python3 train.py
+```
+
+`train.py` will:
+
+- load the tokenizer and training data
+- build the current model defined in [`train.py`](train.py)
+- train for a fixed 300-second budget
+- evaluate the final model on validation data
+- write a detailed step-by-step [`run.log`](run.log)
+- append a row to [`results.tsv`](results.tsv)
+
+### 3. Analyze progress
+
+```bash
+python3 analyze_results.py
+```
+
+This prints:
+
+- total experiments
+- `KEEP` / `DISCARD` / `CRASH` counts
+- baseline and best result
+- kept experiments list
+
+and also generates a progress plot from [`results.tsv`](results.tsv).
+
+## Output Files
+
+After running experiments, the important files are:
+
+- [`run.log`](run.log): full per-step log for the most recent run
+- [`results.tsv`](results.tsv): experiment history table
+- `autoresearch_progress.png` or `autoresearch_progress.svg`: progress chart
+
+The TSV columns are:
+
+```text
+commit	val_bpb	memory_gb	status	description
+```
+
+Where:
+
+- `commit`: current git short hash
+- `val_bpb`: validation bits per byte
+- `memory_gb`: peak GPU memory in GB
+- `status`: usually `keep`, `discard`, or `crash`
+- `description`: human-readable experiment note
+
+## Understanding The Final Training Output
+
+At the end of a successful run, [`train.py`](train.py) prints a block like:
 
 ```text
 ---
-val_bpb:          ...
-training_seconds: ...
-total_seconds:    ...
-peak_vram_mb:     ...
-mfu_percent:      ...
-total_tokens_M:   ...
-num_steps:        ...
-num_params_M:     ...
-depth:            ...
+val_bpb:          2.025186
+training_seconds: 300.0
+total_seconds:    311.0
+peak_vram_mb:     1260.7
+mfu_percent:      0.00
+total_tokens_M:   18.3
+num_steps:        1117
+num_params_M:     2.8
+depth:            6
 ```
+
+The most important metric is:
+
+- `val_bpb`
+
+Lower is better. This is the number you compare across experiments.
+
+## Logging Behavior
+
+`train.py` now handles logging automatically.
+
+It writes:
+
+- terminal live progress as a single updating line
+- newline-delimited per-step history to [`run.log`](run.log)
+- one final row to [`results.tsv`](results.tsv)
+
+So you do **not** need to redirect output manually just to keep logs.
+
+## Plotting Progress
+
+There are two ways to analyze progress:
+
+### Terminal-first
+
+Use:
+
+```bash
+python3 analyze_results.py
+```
+
+This is the recommended Jetson workflow.
+
+It works even if `matplotlib` is not installed:
+
+- with `matplotlib`, it saves a PNG plot
+- without `matplotlib`, it falls back to an SVG plot
+
+### Notebook
+
+[`analysis.ipynb`](analysis.ipynb) is still included as a richer notebook-based analysis view. It was written for the original `results.tsv` workflow and is useful if you want a Jupyter-based summary.
+
+Note:
+
+- the minimal Jetson container does not install notebook-only analysis dependencies by default
+- use [`analyze_results.py`](analyze_results.py) if you want the simplest built-in path
 
 ## Docker Notes
 
-The helper script runs:
+The helper script [`docker/run-jetson.sh`](docker/run-jetson.sh) starts the container with:
 
 - `--runtime nvidia`
 - `--network host`
 - `--ipc host`
-- a bind mount for the repo
-- a named Docker volume for `~/.cache/autoresearch`
+- a bind mount of the repo into `/workspace/autoresearch`
+- a named Docker volume for the autoresearch cache
 
-The image defaults are set in [`Dockerfile.jetson`](Dockerfile.jetson):
+The image defaults in [`Dockerfile.jetson`](Dockerfile.jetson) are intentionally conservative:
 
 - `AUTORESEARCH_TOKENIZER_MODE=byte`
 - `AUTORESEARCH_ATTENTION_BACKEND=eager`
@@ -79,96 +214,73 @@ The image defaults are set in [`Dockerfile.jetson`](Dockerfile.jetson):
 - `AUTORESEARCH_EVAL_TOKENS=524288`
 - `AUTORESEARCH_VOCAB_SIZE=4096`
 
-These are conservative defaults meant to boot reliably on Orin. You can override them with `docker run -e ...` or by editing the Dockerfile.
+These defaults prioritize:
 
-The Jetson container intentionally installs only the runtime dependencies needed by [`prepare.py`](prepare.py) and [`train.py`](train.py). Notebook-only analysis dependencies were left out to keep Python 3.8 / `aarch64` resolution simple on Jetson R35.
+- stability
+- reproducibility
+- successful first runs on Orin
 
-For terminal-friendly result analysis without Jupyter, use [`analyze_results.py`](analyze_results.py). It reads [`results.tsv`](results.tsv), prints summary stats, and regenerates `autoresearch_progress.png`.
+## Useful Environment Variables
 
-`train.py` now writes two outputs automatically:
+### Run metadata
 
-- [`run.log`](run.log): full newline-delimited run log, including per-step progress and final summary
-- [`results.tsv`](results.tsv): one appended experiment row per completed run
+- `AUTORESEARCH_RUN_DESCRIPTION`: text stored in `results.tsv`
+- `AUTORESEARCH_RESULT_STATUS`: status stored for successful runs, default `keep`
+- `AUTORESEARCH_LOG_PATH`: log file path, default `run.log`
+- `AUTORESEARCH_RESULTS_PATH`: results file path, default `results.tsv`
 
-Useful run metadata environment variables:
+### Runtime controls
 
-- `AUTORESEARCH_RUN_DESCRIPTION`: human-readable description stored in `results.tsv`
-- `AUTORESEARCH_RESULT_STATUS`: result label stored in `results.tsv` on successful runs; defaults to `keep`
-- `AUTORESEARCH_LOG_PATH`: optional custom log file path; defaults to `run.log`
-- `AUTORESEARCH_RESULTS_PATH`: optional custom TSV path; defaults to `results.tsv`
-
-## Runtime Controls
-
-Useful environment variables:
-
-- `AUTORESEARCH_MAX_SEQ_LEN`: context length used by prep and training
+- `AUTORESEARCH_MAX_SEQ_LEN`: context length
 - `AUTORESEARCH_EVAL_TOKENS`: validation token budget
-- `AUTORESEARCH_TIME_BUDGET`: wall-clock training budget in seconds
+- `AUTORESEARCH_TIME_BUDGET`: training budget in seconds
 - `AUTORESEARCH_TOKENIZER_MODE`: `byte`, `rustbpe`, or `auto`
 - `AUTORESEARCH_ATTENTION_BACKEND`: `eager`, `sdpa`, `kernel`, or `auto`
 - `AUTORESEARCH_AMP_DTYPE`: `fp32`, `fp16`, `bf16`, or `auto`
+- `AUTORESEARCH_OPTIMIZER`: `adamw` or `hybrid`
+- `AUTORESEARCH_USE_VALUE_EMBEDS`: `0` or `1`
 - `AUTORESEARCH_USE_COMPILE`: `0` or `1`
-- `AUTORESEARCH_DEVICE_PEAK_FLOPS`: optional number used for MFU estimation
+- `AUTORESEARCH_DEVICE_PEAK_FLOPS`: optional value for MFU estimation
 
 ## Agent Workflow
 
-Once the container is working, you can point a coding agent at [`program.md`](program.md) and let it iterate on [`train.py`](train.py). The intended loop is:
+Once the repo is stable on your Jetson, you can point a coding agent at [`program.md`](program.md) and let it iterate on [`train.py`](train.py).
 
-1. Establish a baseline by running the current `train.py`
-2. Edit only `train.py`
-3. Run another experiment
-4. Keep the change if `val_bpb` improves
-5. Revert otherwise
+The intended loop is:
+
+1. run a baseline
+2. change only [`train.py`](train.py)
+3. run another experiment
+4. compare `val_bpb`
+5. keep or discard the change
+6. inspect progress with [`analyze_results.py`](analyze_results.py) or [`analysis.ipynb`](analysis.ipynb)
 
 ## Practical Expectations On Orin
 
-This port is optimized for reliability, not raw speed parity with data-center GPUs. Expect:
+Compared with the original larger-GPU setup, expect:
 
 - much smaller models
-- lower throughput
-- more aggressive memory constraints
-- slower evaluation
+- slower total throughput
+- tighter memory constraints
+- more conservative optimizer and precision settings
+- simpler first-pass experiments
 
-If you want to push harder later, the first knobs to revisit are:
-
-- `DEPTH`
-- `DEVICE_BATCH_SIZE`
-- `TOTAL_BATCH_SIZE`
-- `MAX_SEQ_LEN`
-- `AUTORESEARCH_TOKENIZER_MODE`
-- `AUTORESEARCH_ATTENTION_BACKEND`
+That is intentional. The goal of this fork is to make the research loop work reliably on Orin first, then tune upward carefully.
 
 ## Project Layout
 
 ```text
-prepare.py             data prep, tokenizer, dataloader, evaluation
-train.py               model, optimizer, training loop
-analyze_results.py     terminal analysis + progress plot
-program.md             autonomous experiment instructions
-Dockerfile.jetson      Jetson AGX Orin container image
-requirements-jetson.txt  Python deps installed into the container
-docker/build-jetson.sh build helper
-docker/run-jetson.sh   run helper
+prepare.py               data prep, tokenizer, dataloader, evaluation
+train.py                 model, optimizer, training loop, auto logging
+analyze_results.py       terminal analysis + progress plot
+analysis.ipynb           optional notebook analysis
+program.md               autonomous experiment instructions
+Dockerfile.jetson        Jetson AGX Orin container image
+requirements-jetson.txt  Python deps for the container
+docker/build-jetson.sh   image build helper
+docker/run-jetson.sh     run helper
 ```
 
 ## License
 
 MIT
-
-
-
-To use it on the Orin:
-```bash
-cd /home/pi/autoresearch
-./docker/build-jetson.sh
-./docker/run-jetson.sh
-```
-Then inside the container:
-```bash
-python3 prepare.py --num-shards 4
-python3 train.py
-
-python3 train.py > run.log 2>&1
-
-python3 analyze_results.py --results results.tsv --plot autoresearch_progress.png
-```
