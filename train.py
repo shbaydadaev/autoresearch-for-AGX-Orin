@@ -622,7 +622,7 @@ WARMDOWN_RATIO = 0.20     # preserve more of the run at peak LR
 FINAL_LR_FRAC = 0.1       # do not decay all the way to zero on short runs
 
 # Model size
-DEPTH = 6                 # number of transformer layers
+DEPTH = 7                 # number of transformer layers
 DEVICE_BATCH_SIZE = 16    # per-device batch size (reduce if OOM)
 GRAD_CLIP_NORM = 1.0      # gradient clipping keeps the first Jetson run stable
 
