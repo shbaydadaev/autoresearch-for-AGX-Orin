@@ -107,7 +107,7 @@ def plot_progress(rows, out_path):
             label = label[:25] + "..."
         ax.annotate(label, (idx, y[idx]), textcoords="offset points", xytext=(0, 9), ha="center", fontsize=8)
 
-    ax.set_title("Autoresearch Progress")
+    ax.set_title("Autoresearch Progress: 19 Experiments, 6 Kept", fontsize=16)
     ax.set_xlabel("Experiment Index")
     ax.set_ylabel("Validation BPB (lower is better)")
     ax.set_xticks(x)
@@ -170,7 +170,7 @@ def plot_progress_svg(rows, out_path):
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         '<rect width="100%" height="100%" fill="white"/>',
-        f'<text x="{width/2:.0f}" y="24" text-anchor="middle" font-family="sans-serif" font-size="22">Autoresearch Progress</text>',
+        f'<text x="{width/2:.0f}" y="24" text-anchor="middle" font-family="sans-serif" font-size="22">Autoresearch Progress: 19 Experiments, 6 Kept</text>',
         f'<line x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}" stroke="#333" stroke-width="1.2"/>',
         f'<line x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}" stroke="#333" stroke-width="1.2"/>',
     ]
