@@ -63,6 +63,8 @@ That gives you:
 - one appended row in [`results.tsv`](results.tsv)
 - a generated progress plot such as `autoresearch_progress.png` or `autoresearch_progress.svg`
 
+![teaser](autoresearch_progress.svg)
+
 ## Typical Workflow
 
 ### 1. Prepare data once
@@ -245,6 +247,11 @@ These defaults prioritize:
 ## Agent Workflow
 
 Once the repo is stable on your Jetson, you can point a coding agent at [`program.md`](program.md) and let it iterate on [`train.py`](train.py).
+
+Prompt:
+```bash
+Hi, have a look at program.md and let's kick off a new experiment! Let's do the setup first. Run fully autonomously. Don't ask for confirmation between experiments. Keep going until I come back.
+```
 
 The intended loop is:
 

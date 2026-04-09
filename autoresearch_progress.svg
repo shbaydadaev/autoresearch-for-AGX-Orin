@@ -4,25 +4,89 @@
 <line x1="80" y1="450" x2="970" y2="450" stroke="#333" stroke-width="1.2"/>
 <line x1="80" y1="40" x2="80" y2="450" stroke="#333" stroke-width="1.2"/>
 <line x1="80" y1="450.0" x2="970" y2="450.0" stroke="#e5e5e5" stroke-width="1"/>
-<text x="70" y="454.0" text-anchor="end" font-family="sans-serif" font-size="12">2.004</text>
+<text x="70" y="454.0" text-anchor="end" font-family="sans-serif" font-size="12">1.915</text>
 <line x1="80" y1="347.5" x2="970" y2="347.5" stroke="#e5e5e5" stroke-width="1"/>
-<text x="70" y="351.5" text-anchor="end" font-family="sans-serif" font-size="12">2.014</text>
+<text x="70" y="351.5" text-anchor="end" font-family="sans-serif" font-size="12">1.967</text>
 <line x1="80" y1="245.0" x2="970" y2="245.0" stroke="#e5e5e5" stroke-width="1"/>
-<text x="70" y="249.0" text-anchor="end" font-family="sans-serif" font-size="12">2.025</text>
+<text x="70" y="249.0" text-anchor="end" font-family="sans-serif" font-size="12">2.019</text>
 <line x1="80" y1="142.5" x2="970" y2="142.5" stroke="#e5e5e5" stroke-width="1"/>
-<text x="70" y="146.5" text-anchor="end" font-family="sans-serif" font-size="12">2.035</text>
+<text x="70" y="146.5" text-anchor="end" font-family="sans-serif" font-size="12">2.071</text>
 <line x1="80" y1="40.0" x2="970" y2="40.0" stroke="#e5e5e5" stroke-width="1"/>
-<text x="70" y="44.0" text-anchor="end" font-family="sans-serif" font-size="12">2.045</text>
+<text x="70" y="44.0" text-anchor="end" font-family="sans-serif" font-size="12">2.122</text>
 <line x1="80.0" y1="40" x2="80.0" y2="450" stroke="#f2f2f2" stroke-width="1"/>
 <text x="80.0" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">0</text>
+<line x1="132.4" y1="40" x2="132.4" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="132.4" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">1</text>
+<line x1="184.7" y1="40" x2="184.7" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="184.7" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">2</text>
+<line x1="237.1" y1="40" x2="237.1" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="237.1" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">3</text>
+<line x1="289.4" y1="40" x2="289.4" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="289.4" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">4</text>
+<line x1="341.8" y1="40" x2="341.8" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="341.8" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">5</text>
+<line x1="394.1" y1="40" x2="394.1" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="394.1" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">6</text>
+<line x1="446.5" y1="40" x2="446.5" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="446.5" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">7</text>
+<line x1="498.8" y1="40" x2="498.8" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="498.8" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">8</text>
+<line x1="551.2" y1="40" x2="551.2" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="551.2" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">9</text>
+<line x1="603.5" y1="40" x2="603.5" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="603.5" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">10</text>
+<line x1="655.9" y1="40" x2="655.9" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="655.9" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">11</text>
+<line x1="708.2" y1="40" x2="708.2" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="708.2" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">12</text>
+<line x1="760.6" y1="40" x2="760.6" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="760.6" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">13</text>
+<line x1="812.9" y1="40" x2="812.9" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="812.9" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">14</text>
+<line x1="865.3" y1="40" x2="865.3" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="865.3" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">15</text>
+<line x1="917.6" y1="40" x2="917.6" y2="450" stroke="#f2f2f2" stroke-width="1"/>
+<text x="917.6" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">16</text>
 <line x1="970.0" y1="40" x2="970.0" y2="450" stroke="#f2f2f2" stroke-width="1"/>
-<text x="970.0" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">1</text>
-<polyline points="80.0,240.2 970.0,249.8" fill="none" stroke="#1f77b4" stroke-width="2" opacity="0.75"/>
-<polyline points="80.0,240.2 970.0,249.8" fill="none" stroke="#27ae60" stroke-width="2.5" opacity="0.85"/>
-<circle cx="80.0" cy="240.2" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
-<text x="80.0" y="230.2" text-anchor="middle" font-family="sans-serif" font-size="11">jetson orin baseline</text>
-<circle cx="970.0" cy="249.8" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
-<text x="970.0" y="239.8" text-anchor="middle" font-family="sans-serif" font-size="11">manual run</text>
+<text x="970.0" y="474" text-anchor="middle" font-family="sans-serif" font-size="12">17</text>
+<polyline points="80.0,228.2 132.4,79.6 184.7,214.9 237.1,224.4 289.4,195.3 341.8,213.4 394.1,196.8 446.5,234.1 498.8,214.9 551.2,225.5 603.5,325.1 655.9,251.8 708.2,233.0 760.6,225.3 812.9,328.1 865.3,353.5 917.6,410.4 970.0,237.3" fill="none" stroke="#1f77b4" stroke-width="2" opacity="0.75"/>
+<polyline points="80.0,228.2 446.5,234.1 603.5,325.1 812.9,328.1 865.3,353.5 917.6,410.4" fill="none" stroke="#27ae60" stroke-width="2.5" opacity="0.85"/>
+<circle cx="80.0" cy="228.2" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
+<text x="80.0" y="218.2" text-anchor="middle" font-family="sans-serif" font-size="11">baseline</text>
+<circle cx="132.4" cy="79.6" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="132.4" y="69.6" text-anchor="middle" font-family="sans-serif" font-size="11">depth 7</text>
+<circle cx="184.7" cy="214.9" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="184.7" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="11">warmdown 10 percent</text>
+<circle cx="237.1" cy="224.4" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="237.1" y="214.4" text-anchor="middle" font-family="sans-serif" font-size="11">no weight decay</text>
+<circle cx="289.4" cy="195.3" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="289.4" y="185.3" text-anchor="middle" font-family="sans-serif" font-size="11">matrix lr 0.004</text>
+<circle cx="341.8" cy="213.4" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="341.8" y="203.4" text-anchor="middle" font-family="sans-serif" font-size="11">warmup 2 percent</text>
+<circle cx="394.1" cy="196.8" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="394.1" y="186.8" text-anchor="middle" font-family="sans-serif" font-size="11">no grad clip</text>
+<circle cx="446.5" cy="234.1" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
+<text x="446.5" y="224.1" text-anchor="middle" font-family="sans-serif" font-size="11">softcap 30</text>
+<circle cx="498.8" cy="214.9" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="498.8" y="204.9" text-anchor="middle" font-family="sans-serif" font-size="11">softcap 60</text>
+<circle cx="551.2" cy="225.5" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="551.2" y="215.5" text-anchor="middle" font-family="sans-serif" font-size="11">softcap 24</text>
+<circle cx="603.5" cy="325.1" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
+<text x="603.5" y="315.1" text-anchor="middle" font-family="sans-serif" font-size="11">unembedding lr 0.003</text>
+<circle cx="655.9" cy="251.8" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="655.9" y="241.8" text-anchor="middle" font-family="sans-serif" font-size="11">unembedding lr 0.004</text>
+<circle cx="708.2" cy="233.0" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="708.2" y="223.0" text-anchor="middle" font-family="sans-serif" font-size="11">unembedding lr 0.0035</text>
+<circle cx="760.6" cy="225.3" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="760.6" y="215.3" text-anchor="middle" font-family="sans-serif" font-size="11">unembedding lr 0.0028</text>
+<circle cx="812.9" cy="328.1" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
+<text x="812.9" y="318.1" text-anchor="middle" font-family="sans-serif" font-size="11">softcap 36</text>
+<circle cx="865.3" cy="353.5" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
+<text x="865.3" y="343.5" text-anchor="middle" font-family="sans-serif" font-size="11">softcap 42</text>
+<circle cx="917.6" cy="410.4" r="5.5" fill="#2ecc71" stroke="black" stroke-width="0.8"/>
+<text x="917.6" y="400.4" text-anchor="middle" font-family="sans-serif" font-size="11">softcap 48</text>
+<circle cx="970.0" cy="237.3" r="5.5" fill="#bdbdbd" stroke="black" stroke-width="0.8"/>
+<text x="970.0" y="227.3" text-anchor="middle" font-family="sans-serif" font-size="11">softcap 54</text>
 <text x="500" y="502" text-anchor="middle" font-family="sans-serif" font-size="14">Experiment Index</text>
 <text x="22" y="260" text-anchor="middle" font-family="sans-serif" font-size="14" transform="rotate(-90 22,260)">Validation BPB (lower is better)</text>
 </svg>
