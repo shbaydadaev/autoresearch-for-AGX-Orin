@@ -197,8 +197,6 @@ Note:
 - the minimal Jetson container does not install notebook-only analysis dependencies by default
 - use [`analyze_results.py`](analyze_results.py) if you want the simplest built-in path
 
-![teaser](autoresearch_progress.svg)
-
 ## Docker Notes
 
 The helper script [`docker/run-jetson.sh`](docker/run-jetson.sh) starts the container with:
