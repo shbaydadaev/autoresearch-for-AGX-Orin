@@ -23,3 +23,4 @@ dev/
 results.tsv
 requirements-jetson.txt
 run.log
+uv.lock
