@@ -63,7 +63,6 @@ That gives you:
 - one appended row in [`results.tsv`](results.tsv)
 - a generated progress plot such as `autoresearch_progress.png` or `autoresearch_progress.svg`
 
-![teaser](autoresearch_progress.svg)
 
 ## Typical Workflow
 
@@ -193,6 +192,8 @@ Note:
 
 - the minimal Jetson container does not install notebook-only analysis dependencies by default
 - use [`analyze_results.py`](analyze_results.py) if you want the simplest built-in path
+
+![teaser](autoresearch_progress.svg)
 
 ## Docker Notes
 
