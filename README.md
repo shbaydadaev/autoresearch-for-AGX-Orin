@@ -1,6 +1,10 @@
-# autoresearch-for-AGX-Orin
+# autoresearch-origin
 
 ![teaser](progress.png)
+
+# autoresearch-for-AGX-Orin
+
+![teaser](autoresearch_progress.svg)
 
 This repository is a Jetson AGX Orin oriented fork of Karpathy's `autoresearch`: a tiny autonomous LLM research loop where an agent edits [`train.py`](train.py), runs a fixed-time training job, checks the validation score, and keeps or discards the idea.
 
